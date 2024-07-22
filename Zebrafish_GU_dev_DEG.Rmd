@@ -1,0 +1,317 @@
+---
+title: "Xenium_transcript_isolation_15dpf_32"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+ 
+```{r}
+library(edgeR)
+library(gplots)
+library(plyr)
+library(corrplot)
+library(ggplot2)
+library(EnhancedVolcano)
+#install.packages('ggfortify')
+library(ggfortify)
+library(dplyr)
+library(tibble)
+```
+
+```{r} 
+Sample_info <- read.csv(file="Sample_info.csv", stringsAsFactors = FALSE)
+(Sample_info)
+```
+#Combine the lists for each respective element from the sample info list
+```{r}
+AnnotInfo_all <- read.csv(file="featurecounts_readcounts_ann_2.csv",stringsAsFactors = FALSE,row.names=1)
+AnnotInfo <- AnnotInfo_all[, -c(2, 3, 4, 5, 6, 17)]
+head(AnnotInfo)
+nodupAnnot <- AnnotInfo %>% distinct(Gene.Name, .keep_all = TRUE)
+rownames(nodupAnnot) <- nodupAnnot[,1]
+nodupAnnot<- nodupAnnot[,-1]
+head(nodupAnnot)
+table(duplicated(nodupAnnot[1]))#Still duplicates? actually these are in the rest of the table. The removal matches duplicate removal in excel.
+which(duplicated(nodupAnnot[1]))
+dim(AnnotInfo)
+dim(nodupAnnot)
+```
+## Some exploratory analysis
+```{r}
+Normalized<-read.csv(file="normalized_data.csv",stringsAsFactors = FALSE,row.names = 1)
+head(Normalized)
+which(is.na(Normalized))
+```
+## Some exploratory analysis
+```{r}
+#raw<-read.csv(file="featdurecounts_readcounts_ann_2.csv",stringsAsFactors = FALSE,row.names = #1)
+#head(raw)
+#```
+
+
+#R<-nodupAnnot
+R<-nodupAnnot
+head(R)
+colnames(R)<-Sample_info$Sample
+```
+
+```{r}
+#R<-raw[,-1]
+#head(R)
+#3colnames(R)<-Sample_info$Sample
+```
+
+#overall data summary
+```{r}
+summary(rowSums(R)) 
+summary(rowMeans(R))
+hist(log10(rowSums(R)), breaks = 10)
+any(is.na(R))
+sum(rowMeans(R, na.rm = TRUE) > 10)
+sum(rowSums(R, na.rm = TRUE) > 10)
+
+sum(rowMeans(R) > 10)
+sum(rowSums(R) > 10)
+boxplot(log2(abs(R)))
+```
+## Most highly expressed transcripts
+
+```{r}
+## Top 100
+Top100<-rowSums(R)[order(rowSums(R), 
+                                decreasing = TRUE)][1:100]
+names(Top100)
+R[names(Top100),]
+
+```
+## Top 10 transcript fraction of total counts
+```{r,fig.height=4}
+pdf(file="Top100FractionAll.pdf",height=4, width=6)
+barplot(rowSums(R)[Top100] / sum(R), 
+        ylab = "Count Fraction", 
+        las = 2,
+        #ylim = c(0, max(Top100)),
+        #xlim = c(0, nrow(rowdata)),
+        cex.names = 0.7)
+
+dev.off()
+```
+## Lowly expressed transcripts
+```{r}
+# Total counts per transcript
+TCounts<-rowSums(R)
+
+# How many transcripts had 0 counts
+length(which(TCounts==0))
+```
+```{r, fig.height=4}
+hist(log2(TCounts))
+abline(v = 2, col = "red", lty = 3, lwd = 2)
+```
+```{r}
+## Only include transcripts with at least ~ 1 count per sample
+Exp<-R[TCounts>1,]
+dim(Exp)
+```
+```{r}
+# Total counts per sample
+SCounts<-colSums(Exp)
+head(SCounts)
+```
+```{r,eval=FALSE}
+#barplot(SCounts, las = 2)
+   #     ylim = c(0, max(Top100)),
+  #      xlim = c(0, count(rowdata[,1]))
+safe_max <- function(x) {
+ mx <- max(x, na.rm = TRUE)
+  if (is.finite(mx)) {
+    return(mx)
+  } else {
+    return(1)  # or any other default value you see fit
+  }
+}
+
+#barplot(SCounts, las = 2, ylim = c(0, safe_max(Top100)), xlim = c(0, nrow(R)))
+barplot(SCounts, las = 2)
+```
+
+Do a pca with all  
+```{r}
+Rawpc <- prcomp(t(R))
+
+plot(Rawpc$x[,1], Rawpc$x[,2], col=as.factor(Sample_info$Location), pch=16)
+text(Rawpc$x[,1], Rawpc$x[,2], labels=colnames(R), pos=1, cex=0.8)
+```
+Dendrogram
+```{r}
+Rawsd <- apply(R,2,sd)
+hist(Rawsd)
+Raw_bigsd <-R[which(Rawsd > quantile(Rawsd,.75)),]
+dim(Raw_bigsd)
+Rawdists <- dist(t(R))
+Rawclust <- hclust(Rawdists)
+plot(Rawclust, labels=Sample_info$SampleID)
+```
+## Statistical analysis with EdgeR  
+Make DGE object and filter low expression genes  
+```{r}
+DGE1 <- DGEList(counts = R, genes=R, group=Sample_info$Location)
+DGE1$samples
+dim(DGE1)
+keep <- filterByExpr(DGE1)
+table(keep)
+DGE1 <- DGE1[keep, , keep.lib.sizes=FALSE]
+```
+How many genes expressed above threshold?  
+```{r}
+dim(DGE1)
+```
+Normalize and calculate dispersion 
+```{r}
+DGE1 <- calcNormFactors(DGE1)
+DGE1 <- estimateDisp(DGE1)
+plotMDS(DGE1)
+```
+```{r}
+d
+
+```
+
+
+```{r}
+#result is exact test p value comparing GU and GI with GU reference
+DGE1$samples$group <- relevel(DGE1$samples$group, ref="GU")
+As_ET<-exactTest(DGE1,pair=c("GU","GI"))
+Res_ET<-topTags(As_ET,n=Inf,sort.by="none")$table
+Res_ET
+```
+Export csv with all genes
+```{r}
+write.csv(Res_ET,file="Bladder_development_output_all.csv")
+```
+### Write table for background (all gene symbols in dataset)
+```{r}
+write.table(Res_ET$Gene.Name,col.names=FALSE,row.names=FALSE,quote=FALSE,file="Background_Symbols.txt")
+```
+
+Export csv with all genes
+```{r}
+write.csv(Res_ET,file="Bladder_Development_gene_Table_all.csv")
+```
+
+```{r}
+DevFDR <- Res_ET[which(Res_ET$FDR < .05 & abs(Res_ET$logFC)>1),]
+```
+```{r}
+DevFDR1 <- Res_ET[which(Res_ET$FDR < .1 & abs(Res_ET$logFC)>1),]
+```
+
+```{r}
+DevNomSig <- Res_ET[which(Res_ET$PValue < .05 & abs(Res_ET$logFC)>1),]
+```
+```{r}
+Sig_Up<-Res_ET[which(Res_ET$PValue < .05 & Res_ET$logFC>1),]
+dim(Sig_Up)
+```
+```{r}
+write.table(Sig_Up$Gene_Name,col.names=FALSE,row.names=FALSE,quote=FALSE,file="Sig_Up_Symbols.txt")
+```
+```{r}
+Sig_Dn<-Res_ET[which(Res_ET$PValue < .05 & Res_ET$logFC<(-1)),]
+dim(Sig_Dn)
+```
+```{r}
+write.table(Sig_Dn$Gene_Name,col.names=FALSE,row.names=FALSE,quote=FALSE,file="Sig_Dn_Symbols.txt")
+```
+
+```{r}
+DevNoSig <- Res_ET[which(Res_ET$PValue < .05),]
+```
+
+Export csv with all genes
+```{r}
+write.csv(DevNomSig,file="Bladder_DevNomSig.csv")
+```
+
+Number of genes up and down
+```{r}
+length(which(DevNomSig$logFC>0))
+length(which(DevNomSig$logFC<0))
+```
+Get top 50 Dev genes
+```{r}
+Devtop50genes<-DevNomSig[order(abs(DevNomSig$logFC),decreasing=TRUE),][1:50,"Gene_Name"]
+Devtop50genes
+```
+
+Smear plot for tags < 0.05  
+```{r}
+plotSmear(DGE1, de.tags=rownames(DevNomSig), main = "Developmental Effect p-value < 0.05",ylab="Log2 Fold Change",cex=.75)
+abline(h = c(-1, 1), col = "dodgerblue")
+pdf("DevEffect_smearplot.pdf", height=6, width=9)
+plotSmear(DGE1, de.tags=rownames(DevNomSig), main = "Developmental Effect p-value < 0.05",ylab="Log2 Fold Change",cex=.75)
+abline(h = c(-1, 1), col = "dodgerblue")
+dev.off()
+```
+
+Volcano  
+```{r}
+pdf("DevSig_volcanoplot.pdf", height=4, width=4)
+par(mar=c(5,5,2,1))
+plot(-log10(Res_ET$FDR) ~ Res_ET$logFC, main="", ylab="Adjusted P Value (-log10)", xlab="Log2 Fold Change",pch=20, ylim=c(0,4))
+points(DevFDR1$logFC,-log10(DevFDR1$FDR),pch=20,col="blue")
+abline(h=-log10(0.1))
+abline(v=-1)
+abline(v=1)
+dev.off()
+```
+
+Fancier volcano
+```{r}
+Res_Volcano<-Res_ET[,c("Gene_Name","logFC","FDR")]
+pdf("DevSig_enhvolcano.pdf", height=9, width=9)
+EnhancedVolcano(Res_Volcano,lab=Res_Volcano$Gene_Name,x="logFC",y="FDR",
+    pCutoff = .1,
+    FCcutoff = 1,
+    pointSize = 3.0,
+    labSize = 5.0,
+    ylim = c(0, 4),
+    )
+dev.off()
+```
+
+
+
+### Make a ranked gene list file for GSEA
+
+First assigning EdgeRdata to a new object and making new columns to calculate score for GSEA
+```{r}
+GSEAdata<-Res_ET
+GSEAdata$FCsign<-sign(GSEAdata$logFC)
+GSEAdata$logP<- -log10(GSEAdata$PValue)
+GSEAdata$GSEA_Score<-GSEAdata$logP/GSEAdata$FCsign
+```
+Sort the data by GSEA_Score
+```{r}
+GSEAdata<-GSEAdata[order(GSEAdata$GSEA_Score,decreasing=TRUE),]
+head(GSEAdata)
+```
+
+Write a .rnk file with gene symbols and their scores
+
+```{r}
+write.table(GSEAdata[,c("Gene_Name","GSEA_Score")],sep="\t",col.names=FALSE,row.names=FALSE,quote=FALSE,file="Scores.rnk")
+```
+
+Read in GFGR pathway genes
+```{r}
+FGFRgenes<-read.csv("FGFR1genes.csv",header=FALSE)
+```
+
+```{r}
+FGFRgeneExp<-Res_ET[Res_ET$Gene_Name%in%FGFRgenes$V1,]
+write.csv(FGFRgeneExp,file="FGFR1pathway_BladderExp.csv")
+```
+
